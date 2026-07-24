@@ -9,3 +9,4 @@
 !/build/.gitkeep
 /dist/**
 .DS_Store
+/inca.toml

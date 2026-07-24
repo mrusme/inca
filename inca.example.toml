@@ -1,0 +1,18 @@
+# Example inca configuration. Copy this to the path inca reads by default,
+# which is $XDG_CONFIG_HOME/inca/config.toml, or point at it with -c.
+
+[database]
+# Directory the local badger database is stored in. When left empty, inca uses
+# $XDG_DATA_HOME/inca/db. The INCA_DATABASE environment variable overrides it.
+path = ""
+
+# One [[account]] table per server. An account may serve calendars and address
+# books from the same endpoint, which is the common case, or from separate ones
+# (e.g. on services like Fastmail).
+[[account]]
+name = "personal"
+endpoint = "https://dav.example.com"
+# caldav_endpoint = "https://cal.work.example.com"
+# carddav_endpoint = "https://card.work.example.com"
+username = "alice"
+password = "secret"
