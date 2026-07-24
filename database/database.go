@@ -1,0 +1,56 @@
+package database
+
+import (
+	"errors"
+
+	"github.com/dgraph-io/badger/v4"
+)
+
+type Database struct {
+	logger badger.Logger
+	engine *badger.DB
+}
+
+type Model interface {
+	SetKey(string)
+	GetKey() string
+}
+
+func New(logger badger.Logger, dbpath string, readOnly bool) (*Database, error) {
+	var err error
+
+	bopt := badger.DefaultOptions(dbpath).
+		WithLogger(logger).
+		WithReadOnly(readOnly)
+
+	if dbpath == "" {
+		bopt = bopt.WithInMemory(true)
+	}
+
+	db := new(Database)
+	db.logger = logger
+	if db.engine, err = badger.Open(bopt); err == badger.ErrWindowsNotSupported || err == badger.ErrPlan9NotSupported {
+		bopt = bopt.WithReadOnly(false)
+		db.engine, err = badger.Open(bopt)
+	}
+	if err != nil {
+		return db, err
+	}
+
+	return db, nil
+}
+
+func (db *Database) Close() {
+	repeat := true
+
+	for repeat {
+		if err := db.engine.RunValueLogGC(0.7); err != nil {
+			repeat = false
+		}
+	}
+	db.engine.Close()
+}
+
+func (db *Database) IsErrKeyNotFound(err error) bool {
+	return errors.Is(err, badger.ErrKeyNotFound)
+}
