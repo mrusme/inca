@@ -226,14 +226,15 @@ func (d *DAV) SyncAddressBook(
 		}
 	}
 
-	if len(result.Updated) > 0 {
-		paths := make([]string, len(result.Updated))
-		for i := range result.Updated {
-			paths[i] = result.Updated[i].Path
+	var missing []string
+	for i := range result.Updated {
+		if result.Updated[i].Card == nil {
+			missing = append(missing, result.Updated[i].Path)
 		}
-
+	}
+	if len(missing) > 0 {
 		objects, err := d.cardClient.MultiGetAddressBook(ctx, path, &carddav.AddressBookMultiGet{
-			Paths:       paths,
+			Paths:       missing,
 			DataRequest: carddav.AddressDataRequest{AllProp: true},
 		})
 		if err != nil {
@@ -244,7 +245,9 @@ func (d *DAV) SyncAddressBook(
 			byPath[objects[i].Path] = objects[i].Card
 		}
 		for i := range result.Updated {
-			result.Updated[i].Card = byPath[result.Updated[i].Path]
+			if result.Updated[i].Card == nil {
+				result.Updated[i].Card = byPath[result.Updated[i].Path]
+			}
 		}
 	}
 

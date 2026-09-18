@@ -130,8 +130,9 @@ A server that does not support the report makes Inca fall back to a
 `calendar-query` filtered on `VCALENDAR` and an `addressbook-query` requesting
 all properties, the widely implemented reports from RFC 4791 and RFC 6352. A
 stored token the server rejects as stale makes Inca sync the collection from
-scratch. The CardDAV sync report names the contacts that changed without their
-data, so Inca follows it with a multiget to fetch them.
+scratch. The sync report asks for the data of every changed object. A server
+that returns a changed object without its data makes Inca fetch that object
+with a multiget.
 
 Inca is tested against [Radicale][radicale], against [Baïkal][baikal], against
 an in-memory go-webdav server, and against _Fastmail_.
