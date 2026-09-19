@@ -1,8 +1,8 @@
 package calendar
 
 import (
-	"github.com/emersion/go-webdav/caldav"
 	"xn--gckvb8fzb.com/inca/database"
+	"xn--gckvb8fzb.com/maya/libs/webdav/caldav"
 )
 
 type Calendar struct {

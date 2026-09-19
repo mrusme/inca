@@ -1,8 +1,8 @@
 package addressbook
 
 import (
-	"github.com/emersion/go-webdav/carddav"
 	"xn--gckvb8fzb.com/inca/database"
+	"xn--gckvb8fzb.com/maya/libs/webdav/carddav"
 )
 
 type AddressBook struct {

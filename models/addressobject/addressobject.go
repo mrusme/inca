@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/emersion/go-vcard"
-	"github.com/emersion/go-webdav/carddav"
 	"xn--gckvb8fzb.com/inca/database"
+	"xn--gckvb8fzb.com/maya/libs/webdav/carddav"
 )
 
 type AddressObject struct {

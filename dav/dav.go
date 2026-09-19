@@ -7,10 +7,10 @@ import (
 
 	"github.com/emersion/go-ical"
 	"github.com/emersion/go-vcard"
-	"github.com/emersion/go-webdav"
-	"github.com/emersion/go-webdav/caldav"
-	"github.com/emersion/go-webdav/carddav"
 	"xn--gckvb8fzb.com/inca/models/config"
+	"xn--gckvb8fzb.com/maya/libs/webdav"
+	"xn--gckvb8fzb.com/maya/libs/webdav/caldav"
+	"xn--gckvb8fzb.com/maya/libs/webdav/carddav"
 )
 
 const maxSyncPages = 1000
