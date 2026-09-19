@@ -106,12 +106,15 @@ func syncCalendars(
 			prevToken = prev.SyncToken
 		}
 
-		updated, deleted, newToken, incremental, err := collectCalendarChanges(rt, ctx, d, c.Path, prevToken)
+		updated, deleted, newToken, incremental, complete, err := collectCalendarChanges(rt, ctx, d, c.Path, prevToken)
 		if err != nil {
 			rt.Out.Put(out.Opts{Type: out.Warn},
 				"Could not read calendar %s: %s", displayName(c.Name, c.Path),
 				err.Error())
 			continue
+		}
+		if complete {
+			deleted = append(deleted, staleCalendarObjects(rt, account.Name, c.Path, updated)...)
 		}
 
 		var stored int
@@ -159,23 +162,51 @@ func collectCalendarChanges(
 	d *dav.DAV,
 	path string,
 	prevToken string,
-) (updated []dav.CalendarObject, deleted []string, newToken string, incremental bool, err error) {
+) (updated []dav.CalendarObject, deleted []string, newToken string, incremental bool, complete bool, err error) {
+	complete = prevToken == ""
+
 	res, err := d.SyncCalendar(ctx, path, prevToken)
 	if err != nil && prevToken != "" {
 		rt.Logger.Debugf("Calendar %s: sync token rejected (%s), syncing fresh",
 			path, err.Error())
 		res, err = d.SyncCalendar(ctx, path, "")
+		complete = true
 	}
 	if err != nil {
 		rt.Logger.Debugf("Calendar %s: sync-collection unavailable (%s), "+
 			"falling back to a full query", path, err.Error())
 		objects, qerr := d.QueryCalendarObjects(ctx, path)
 		if qerr != nil {
-			return nil, nil, "", false, qerr
+			return nil, nil, "", false, false, qerr
 		}
-		return objects, nil, "", false, nil
+		return objects, nil, "", false, true, nil
 	}
-	return res.Updated, res.Deleted, res.SyncToken, true, nil
+	return res.Updated, res.Deleted, res.SyncToken, true, complete, nil
+}
+
+func staleCalendarObjects(
+	rt *runtime.Runtime,
+	accountName string,
+	calendarPath string,
+	current []dav.CalendarObject,
+) (stale []string) {
+	local, err := calendarobject.List(rt.Database)
+	if err != nil {
+		rt.Logger.Warningf("Could not list the calendar objects of %s: %s", calendarPath, err.Error())
+		return nil
+	}
+
+	listed := make(map[string]bool, len(current))
+	for i := range current {
+		listed[current[i].Path] = true
+	}
+	for _, co := range local {
+		if co.AccountName == accountName && co.CalendarPath == calendarPath && !listed[co.Path] {
+			stale = append(stale, co.Path)
+		}
+	}
+
+	return stale
 }
 
 func syncAddressBooks(
@@ -201,12 +232,15 @@ func syncAddressBooks(
 			prevToken = prev.SyncToken
 		}
 
-		updated, deleted, newToken, incremental, err := collectAddressChanges(rt, ctx, d, ab.Path, prevToken)
+		updated, deleted, newToken, incremental, complete, err := collectAddressChanges(rt, ctx, d, ab.Path, prevToken)
 		if err != nil {
 			rt.Out.Put(out.Opts{Type: out.Warn},
 				"Could not read address book %s: %s",
 				displayName(ab.Name, ab.Path), err.Error())
 			continue
+		}
+		if complete {
+			deleted = append(deleted, staleAddressObjects(rt, account.Name, ab.Path, updated)...)
 		}
 
 		var stored int
@@ -254,23 +288,51 @@ func collectAddressChanges(
 	d *dav.DAV,
 	path string,
 	prevToken string,
-) (updated []dav.AddressObject, deleted []string, newToken string, incremental bool, err error) {
+) (updated []dav.AddressObject, deleted []string, newToken string, incremental bool, complete bool, err error) {
+	complete = prevToken == ""
+
 	res, err := d.SyncAddressBook(ctx, path, prevToken)
 	if err != nil && prevToken != "" {
 		rt.Logger.Debugf("Address book %s: sync token rejected (%s), syncing fresh",
 			path, err.Error())
 		res, err = d.SyncAddressBook(ctx, path, "")
+		complete = true
 	}
 	if err != nil {
 		rt.Logger.Debugf("Address book %s: sync-collection unavailable (%s), "+
 			"falling back to a full query", path, err.Error())
 		objects, qerr := d.QueryAddressObjects(ctx, path)
 		if qerr != nil {
-			return nil, nil, "", false, qerr
+			return nil, nil, "", false, false, qerr
 		}
-		return objects, nil, "", false, nil
+		return objects, nil, "", false, true, nil
 	}
-	return res.Updated, res.Deleted, res.SyncToken, true, nil
+	return res.Updated, res.Deleted, res.SyncToken, true, complete, nil
+}
+
+func staleAddressObjects(
+	rt *runtime.Runtime,
+	accountName string,
+	addressBookPath string,
+	current []dav.AddressObject,
+) (stale []string) {
+	local, err := addressobject.List(rt.Database)
+	if err != nil {
+		rt.Logger.Warningf("Could not list the address objects of %s: %s", addressBookPath, err.Error())
+		return nil
+	}
+
+	listed := make(map[string]bool, len(current))
+	for i := range current {
+		listed[current[i].Path] = true
+	}
+	for _, ao := range local {
+		if ao.AccountName == accountName && ao.AddressBookPath == addressBookPath && !listed[ao.Path] {
+			stale = append(stale, ao.Path)
+		}
+	}
+
+	return stale
 }
 
 func reportCollection(
