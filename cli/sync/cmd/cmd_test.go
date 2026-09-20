@@ -2,11 +2,10 @@ package syncCmd
 
 import (
 	"log/slog"
-	"slices"
+	"maps"
 	"testing"
 
 	"xn--gckvb8fzb.com/inca/database"
-	"xn--gckvb8fzb.com/inca/dav"
 	"xn--gckvb8fzb.com/inca/helpers/log"
 	"xn--gckvb8fzb.com/inca/models/addressobject"
 	"xn--gckvb8fzb.com/inca/models/calendarobject"
@@ -28,47 +27,53 @@ func newRuntime(t *testing.T) *runtime.Runtime {
 	return rt
 }
 
-func TestStaleCalendarObjects(t *testing.T) {
+func TestKnownCalendarObjects(t *testing.T) {
 	rt := newRuntime(t)
 
-	for _, one := range []struct{ account, calendar, path string }{
-		{"home", "/dav/alice/calendars/personal/", "/dav/alice/calendars/personal/kept.ics"},
-		{"home", "/dav/alice/calendars/personal/", "/dav/alice/calendars/personal/gone.ics"},
-		{"home", "/dav/alice/calendars/work/", "/dav/alice/calendars/work/other-calendar.ics"},
-		{"office", "/dav/alice/calendars/personal/", "/dav/alice/calendars/personal/other-account.ics"},
+	for _, one := range []struct{ account, calendar, path, etag string }{
+		{"home", "/dav/alice/calendars/personal/", "/dav/alice/calendars/personal/a.ics", "1"},
+		{"home", "/dav/alice/calendars/personal/", "/dav/alice/calendars/personal/b.ics", ""},
+		{"home", "/dav/alice/calendars/work/", "/dav/alice/calendars/work/other-calendar.ics", "3"},
+		{"office", "/dav/alice/calendars/personal/", "/dav/alice/calendars/personal/other-account.ics", "4"},
 	} {
-		if err := calendarobject.Set(rt.Database, calendarobject.New(one.account, one.calendar, one.path)); err != nil {
+		co := calendarobject.New(one.account, one.calendar, one.path)
+		co.ETag = one.etag
+		if err := calendarobject.Set(rt.Database, co); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	stale := staleCalendarObjects(rt, "home", "/dav/alice/calendars/personal/",
-		[]dav.CalendarObject{{Path: "/dav/alice/calendars/personal/kept.ics"}, {Path: "/dav/alice/calendars/personal/new.ics"}})
-	if !slices.Equal(stale, []string{"/dav/alice/calendars/personal/gone.ics"}) {
-		t.Errorf("stale = %v, want the one object of this calendar and account that the server no longer lists", stale)
+	known := knownCalendarObjects(rt, "home", "/dav/alice/calendars/personal/")
+	want := map[string]string{
+		"/dav/alice/calendars/personal/a.ics": "1",
+		"/dav/alice/calendars/personal/b.ics": "",
+	}
+	if !maps.Equal(known, want) {
+		t.Errorf("known = %v, want the objects of this calendar and account alone", known)
 	}
 
-	if all := staleCalendarObjects(rt, "home", "/dav/alice/calendars/work/", nil); len(all) != 1 {
-		t.Errorf("a calendar the server lists as empty: %v, want its one local object", all)
+	if none := knownCalendarObjects(rt, "home", "/dav/alice/calendars/empty/"); len(none) != 0 {
+		t.Errorf("a calendar without local objects: %v", none)
 	}
 }
 
-func TestStaleAddressObjects(t *testing.T) {
+func TestKnownAddressObjects(t *testing.T) {
 	rt := newRuntime(t)
 
-	for _, one := range []struct{ account, book, path string }{
-		{"home", "/dav/alice/contacts/personal/", "/dav/alice/contacts/personal/kept.vcf"},
-		{"home", "/dav/alice/contacts/personal/", "/dav/alice/contacts/personal/gone.vcf"},
-		{"home", "/dav/alice/contacts/clients/", "/dav/alice/contacts/clients/other-book.vcf"},
+	for _, one := range []struct{ account, book, path, etag string }{
+		{"home", "/dav/alice/contacts/personal/", "/dav/alice/contacts/personal/a.vcf", "1"},
+		{"home", "/dav/alice/contacts/clients/", "/dav/alice/contacts/clients/other-book.vcf", "2"},
+		{"office", "/dav/alice/contacts/personal/", "/dav/alice/contacts/personal/other-account.vcf", "3"},
 	} {
-		if err := addressobject.Set(rt.Database, addressobject.New(one.account, one.book, one.path)); err != nil {
+		ao := addressobject.New(one.account, one.book, one.path)
+		ao.ETag = one.etag
+		if err := addressobject.Set(rt.Database, ao); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	stale := staleAddressObjects(rt, "home", "/dav/alice/contacts/personal/",
-		[]dav.AddressObject{{Path: "/dav/alice/contacts/personal/kept.vcf"}})
-	if !slices.Equal(stale, []string{"/dav/alice/contacts/personal/gone.vcf"}) {
-		t.Errorf("stale = %v", stale)
+	known := knownAddressObjects(rt, "home", "/dav/alice/contacts/personal/")
+	if !maps.Equal(known, map[string]string{"/dav/alice/contacts/personal/a.vcf": "1"}) {
+		t.Errorf("known = %v", known)
 	}
 }

@@ -13,6 +13,10 @@ Inca is the spiritual successor to [addrb][addrb] and [caldr][caldr].
 [addrb]: https://github.com/mrusme/addrb
 [caldr]: https://github.com/mrusme/caldr
 
+**Note:** Inca depends on [Maya's][maya] hard-fork of `go-webdav`. Maya is not
+(yet) publicly available, hence unless you have been given private beta-access
+to Maya you won't be able to use Inca just yet.
+
 ## Installation
 
 Build the binary with the provided Makefile:
@@ -81,6 +85,64 @@ On later runs Inca sends the sync token it stored last time, so the server
 returns only what changed. Objects the server reports as deleted are removed
 from the local database.
 
+### Hosts
+
+Inca sends the credentials of an account to the host of its endpoint, but some
+providers however keep the data on a different host. iCloud, for example, refers
+from `caldav.icloud.com` to a partition host such as `p42-caldav.icloud.com`.
+
+Whenever this happens in a terminal, `sync` shows a prompt:
+
+```
+▲ caldav.icloud.com refers to p42-caldav.icloud.com for the data of this account.
+  Send the credentials of personal there?
+  [n] no   [h] this host   [d] every host under icloud.com
+  >
+```
+
+`h` approves the one host and `d` every host under the domain. This is a safety
+measure to protect your credentials from being sent to other systems.
+
+Inca stores the approval for that account in its database and doesn't show the
+prompt for it again in the future, unless the database is ever cleared/deleted.
+
+Without a terminal (e.g. in a cron job) the host is rejected by default and the
+sync aborts. You cen prevent this by using the `--trust-host` flag that takes
+the account and a specific host (e.g. `p42-caldav.icloud.com`), or the account
+and a wildcard (e.g. `*.icloud.com`).
+
+**Note:** Inca never follows a reference from `https` to `http`, regardless of
+whether it was approved or not.
+
+### Accounts
+
+List the configured accounts with the services Inca discovered for them:
+
+```sh
+inca accounts list
+```
+
+Inca stores the endpoint and the principal it discovered and skips the discovery
+on later runs. It discovers again on its own when the stored endpoint returns a
+404, a 405 or a 410, or when explicitly requested:
+
+```sh
+inca accounts discover personal
+```
+
+Without an account, `discover` goes through all of them.
+
+To view and change the approved hosts use the following commands:
+
+```sh
+inca accounts hosts list
+inca accounts hosts trust personal '*.icloud.com'
+inca accounts hosts forget personal '*.icloud.com'
+```
+
+The approvals are in the database and if you delete the database, Inca shows the
+prompts again.
+
 ### Contacts (a.k.a. _People_)
 
 List every synced contact, sorted by name:
@@ -120,25 +182,28 @@ Every command takes `--color` (`always`, `auto`, `never`) and `--debug`.
 
 ## Compatibility
 
-Inca discovers the account principal with `DAV:current-user-principal` rather
-than guessing a path, which most servers support, and falls back to
-`/principals/{username}/` when discovery is refused.
+Inca finds the service the way RFC 6764 describes it. For an endpoint with a
+path it asks that path first, then the well-known URI of the host, then `/`, and
+it reads the account principal from `DAV:current-user-principal`. An account
+without an endpoint is discovered through DNS from the domain of its username,
+provided the username is an address.
 
 Changes are pulled with a `sync-collection` report (RFC 6578), which is how Inca
 gets both the initial state and later deltas, along with a sync token to store.
-A server that does not support the report makes Inca fall back to a
-`calendar-query` filtered on `VCALENDAR` and an `addressbook-query` requesting
-all properties, the widely implemented reports from RFC 4791 and RFC 6352. A
-stored token the server rejects as stale makes Inca sync the collection from
-scratch. The sync report asks for the data of every changed object. A server
-that returns a changed object without its data makes Inca fetch that object with
-a multiget.
+If a server does not support the report, Inca falls back to listing the ETags
+and fetching what changed with a multiget. A stored token the server rejects as
+stale will trigger a full sync of the collection from scratch, without
+downloading what it already has. The sync report asks for the data of every
+changed object, and if a server returns a changed object without its data, Inca
+fetches that object with a multiget.
 
 Inca is tested against [Radicale][radicale], against [Baïkal][baikal], against
-an in-memory go-webdav server, and against _Fastmail_.
+[Nextcloud][nextcloud], against an in-memory go-webdav server, and against
+Fastmail.
 
 [radicale]: https://radicale.org
 [baikal]: https://sabre.io/baikal/
+[nextcloud]: https://nextcloud.com
 
 However, the officially supported server-side for Inca is [Maya][maya].
 

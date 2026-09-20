@@ -2,6 +2,7 @@ package dav
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"xn--gckvb8fzb.com/inca/models/addressobject"
 	"xn--gckvb8fzb.com/inca/models/calendarobject"
 	"xn--gckvb8fzb.com/inca/models/config"
+	"xn--gckvb8fzb.com/maya/libs/webdav"
 	"xn--gckvb8fzb.com/maya/libs/webdav/caldav"
 	"xn--gckvb8fzb.com/maya/libs/webdav/carddav"
 )
@@ -87,6 +89,10 @@ func (b *calTestBackend) PutCalendarObject(ctx context.Context, path string, cal
 }
 
 func (b *calTestBackend) DeleteCalendarObject(ctx context.Context, path string, opts *caldav.DeleteCalendarObjectOptions) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (b *calTestBackend) DeleteCalendar(ctx context.Context, path string, opts *caldav.DeleteCalendarObjectOptions) error {
 	return fmt.Errorf("not implemented")
 }
 
@@ -178,6 +184,16 @@ func makeCalendarData(uid, component, summary string) *ical.Calendar {
 	return cal
 }
 
+func formattedName(t *testing.T, obj *carddav.AddressObject) string {
+	t.Helper()
+
+	card, err := obj.Decoded()
+	if err != nil || card == nil {
+		t.Fatalf("%s has no card: %v", obj.Path, err)
+	}
+	return card.Value(vcard.FieldFormattedName)
+}
+
 func makeCard(uid, fn string) vcard.Card {
 	card := make(vcard.Card)
 	card.SetValue(vcard.FieldVersion, "3.0")
@@ -187,6 +203,20 @@ func makeCard(uid, fn string) vcard.Card {
 }
 
 func TestSyncRoundTrip(t *testing.T) {
+	calObjectsOnServer := map[string][]caldav.CalendarObject{
+		"/dav-principal/cal/personal": {
+			{
+				Path: "/dav-principal/cal/personal/event.ics",
+				ETag: "etag-event",
+				Data: makeCalendarData("event-1", ical.CompEvent, "Lunch"),
+			},
+			{
+				Path: "/dav-principal/cal/personal/task.ics",
+				ETag: "etag-task",
+				Data: makeCalendarData("task-1", ical.CompToDo, "Buy milk"),
+			},
+		},
+	}
 	calBackend := &calTestBackend{
 		principal: "/dav-principal",
 		homeSet:   "/dav-principal/cal",
@@ -195,18 +225,18 @@ func TestSyncRoundTrip(t *testing.T) {
 			Name:                  "Personal",
 			SupportedComponentSet: []string{"VEVENT", "VTODO"},
 		}},
-		objects: map[string][]caldav.CalendarObject{
-			"/dav-principal/cal/personal": {
-				{
-					Path: "/dav-principal/cal/personal/event.ics",
-					ETag: "etag-event",
-					Data: makeCalendarData("event-1", ical.CompEvent, "Lunch"),
-				},
-				{
-					Path: "/dav-principal/cal/personal/task.ics",
-					ETag: "etag-task",
-					Data: makeCalendarData("task-1", ical.CompToDo, "Buy milk"),
-				},
+		objects: calObjectsOnServer,
+		syncScript: map[string]*caldav.SyncResponse{
+			"": {SyncToken: "cal-1", Updated: calObjectsOnServer["/dav-principal/cal/personal"]},
+		},
+	}
+
+	cardObjectsOnServer := map[string][]carddav.AddressObject{
+		"/dav-principal/card/personal": {
+			{
+				Path: "/dav-principal/card/personal/alice.vcf",
+				ETag: "etag-alice",
+				Card: makeCard("contact-1", "Alice Example"),
 			},
 		},
 	}
@@ -217,14 +247,9 @@ func TestSyncRoundTrip(t *testing.T) {
 			Path: "/dav-principal/card/personal",
 			Name: "Contacts",
 		}},
-		objects: map[string][]carddav.AddressObject{
-			"/dav-principal/card/personal": {
-				{
-					Path: "/dav-principal/card/personal/alice.vcf",
-					ETag: "etag-alice",
-					Card: makeCard("contact-1", "Alice Example"),
-				},
-			},
+		objects: cardObjectsOnServer,
+		syncScript: map[string]*carddav.SyncResponse{
+			"": {SyncToken: "card-1", Updated: cardObjectsOnServer["/dav-principal/card/personal"]},
 		},
 	}
 
@@ -241,7 +266,7 @@ func TestSyncRoundTrip(t *testing.T) {
 		CardDAVEndpoint: cardServer.URL,
 	}
 
-	d, err := New(account)
+	d, err := New(account, &Options{UserAgent: "inca/test"})
 	if err != nil {
 		t.Fatalf("dav.New: %s", err)
 	}
@@ -262,12 +287,13 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatalf("got %d calendars, want 1", len(calendars))
 	}
 
-	calObjects, err := d.QueryCalendarObjects(ctx, calendars[0].Path)
+	calResult, err := d.SynchronizeCalendar(ctx, &calendars[0], webdav.SyncState{}, nil)
 	if err != nil {
-		t.Fatalf("QueryCalendarObjects: %s", err)
+		t.Fatalf("SynchronizeCalendar: %s", err)
 	}
-	if len(calObjects) != 2 {
-		t.Fatalf("got %d calendar objects, want 2", len(calObjects))
+	calObjects := calResult.Updated
+	if len(calObjects) != 2 || calResult.Strategy != webdav.SyncFull || calResult.State.SyncToken != "cal-1" {
+		t.Fatalf("got %d calendar objects by a %v run with the state %+v", len(calObjects), calResult.Strategy, calResult.State)
 	}
 
 	components := map[string]int{}
@@ -293,10 +319,11 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatalf("got %d address books, want 1", len(books))
 	}
 
-	cardObjects, err := d.QueryAddressObjects(ctx, books[0].Path)
+	cardResult, err := d.SynchronizeAddressBook(ctx, &books[0], webdav.SyncState{}, nil)
 	if err != nil {
-		t.Fatalf("QueryAddressObjects: %s", err)
+		t.Fatalf("SynchronizeAddressBook: %s", err)
 	}
+	cardObjects := cardResult.Updated
 	if len(cardObjects) != 1 {
 		t.Fatalf("got %d address objects, want 1", len(cardObjects))
 	}
@@ -401,30 +428,40 @@ func TestIncrementalSync(t *testing.T) {
 		Password:        "secret",
 		CalDAVEndpoint:  calServer.URL,
 		CardDAVEndpoint: cardServer.URL,
-	})
+	}, &Options{UserAgent: "inca/test"})
 	if err != nil {
 		t.Fatalf("dav.New: %s", err)
 	}
 	ctx := context.Background()
 
-	first, err := d.SyncCalendar(ctx, calPath, "")
-	if err != nil {
-		t.Fatalf("SyncCalendar initial: %s", err)
+	calendars, err := d.FindCalendars(ctx)
+	if err != nil || len(calendars) != 1 {
+		t.Fatalf("FindCalendars: %d, %v", len(calendars), err)
 	}
-	if first.SyncToken != "cal-1" {
-		t.Fatalf("initial token = %q, want cal-1", first.SyncToken)
+
+	first, err := d.SynchronizeCalendar(ctx, &calendars[0], webdav.SyncState{}, nil)
+	if err != nil {
+		t.Fatalf("SynchronizeCalendar initial: %s", err)
+	}
+	if first.State.SyncToken != "cal-1" || first.Strategy != webdav.SyncFull {
+		t.Fatalf("initial: token %q by a %v run, want cal-1 by a full one", first.State.SyncToken, first.Strategy)
 	}
 	if len(first.Updated) != 2 || len(first.Deleted) != 0 {
 		t.Fatalf("initial: %d updated, %d deleted; want 2, 0",
 			len(first.Updated), len(first.Deleted))
 	}
 
-	second, err := d.SyncCalendar(ctx, calPath, first.SyncToken)
-	if err != nil {
-		t.Fatalf("SyncCalendar incremental: %s", err)
+	etags := map[string]string{}
+	for i := range first.Updated {
+		etags[first.Updated[i].Path] = first.Updated[i].ETag
 	}
-	if second.SyncToken != "cal-2" {
-		t.Fatalf("incremental token = %q, want cal-2", second.SyncToken)
+
+	second, err := d.SynchronizeCalendar(ctx, &calendars[0], first.State, etags)
+	if err != nil {
+		t.Fatalf("SynchronizeCalendar incremental: %s", err)
+	}
+	if second.State.SyncToken != "cal-2" || second.Strategy != webdav.SyncIncremental {
+		t.Fatalf("incremental: token %q by a %v run, want cal-2 by an incremental one", second.State.SyncToken, second.Strategy)
 	}
 	if len(second.Updated) != 1 || second.Updated[0].Path != event2.Path {
 		t.Fatalf("incremental updated = %+v, want only event2", second.Updated)
@@ -432,35 +469,52 @@ func TestIncrementalSync(t *testing.T) {
 	if len(second.Deleted) != 1 || second.Deleted[0] != task.Path {
 		t.Fatalf("incremental deleted = %v, want [%s]", second.Deleted, task.Path)
 	}
-	if second.Updated[0].Data == nil {
-		t.Fatal("incremental updated object has no data")
+	if data, err := second.Updated[0].Decoded(); err != nil || data == nil {
+		t.Fatalf("incremental updated object has no data: %v", err)
 	}
 
-	firstCard, err := d.SyncAddressBook(ctx, cardPath, "")
+	books, err := d.FindAddressBooks(ctx)
+	if err != nil || len(books) != 1 {
+		t.Fatalf("FindAddressBooks: %d, %v", len(books), err)
+	}
+
+	firstCard, err := d.SynchronizeAddressBook(ctx, &books[0], webdav.SyncState{}, nil)
 	if err != nil {
-		t.Fatalf("SyncAddressBook initial: %s", err)
+		t.Fatalf("SynchronizeAddressBook initial: %s", err)
 	}
-	if len(firstCard.Updated) != 1 || firstCard.Updated[0].Card == nil {
-		t.Fatalf("initial card sync did not return card data: %+v", firstCard.Updated)
+	if len(firstCard.Updated) != 1 {
+		t.Fatalf("initial card sync returned %d cards, want 1", len(firstCard.Updated))
 	}
-	if got := firstCard.Updated[0].Card.Value(vcard.FieldFormattedName); got != "Alice Example" {
+	if got := formattedName(t, &firstCard.Updated[0]); got != "Alice Example" {
 		t.Fatalf("initial card FN = %q, want Alice Example", got)
 	}
 
-	secondCard, err := d.SyncAddressBook(ctx, cardPath, firstCard.SyncToken)
+	secondCard, err := d.SynchronizeAddressBook(ctx, &books[0], firstCard.State, map[string]string{alice.Path: alice.ETag})
 	if err != nil {
-		t.Fatalf("SyncAddressBook incremental: %s", err)
+		t.Fatalf("SynchronizeAddressBook incremental: %s", err)
 	}
-	if secondCard.SyncToken != "card-2" {
-		t.Fatalf("incremental card token = %q, want card-2", secondCard.SyncToken)
+	if secondCard.State.SyncToken != "card-2" {
+		t.Fatalf("incremental card token = %q, want card-2", secondCard.State.SyncToken)
 	}
-	if len(secondCard.Updated) != 1 || secondCard.Updated[0].Card == nil {
-		t.Fatalf("incremental card sync missing data: %+v", secondCard.Updated)
+	if len(secondCard.Updated) != 1 {
+		t.Fatalf("incremental card sync returned %d cards, want 1", len(secondCard.Updated))
 	}
-	if got := secondCard.Updated[0].Card.Value(vcard.FieldFormattedName); got != "Alice Updated" {
+	if got := formattedName(t, &secondCard.Updated[0]); got != "Alice Updated" {
 		t.Fatalf("incremental card FN = %q, want Alice Updated", got)
 	}
 }
+
+const principalOnly = `<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/</href>
+    <propstat>
+      <prop><current-user-principal><href>/card/</href></current-user-principal></prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>
+`
 
 const syncWithoutAddressData = `<?xml version="1.0" encoding="UTF-8"?>
 <multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">
@@ -511,6 +565,8 @@ func TestSyncAddressBookFetchesMissingCards(t *testing.T) {
 		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 		w.WriteHeader(http.StatusMultiStatus)
 		switch {
+		case r.Method == "PROPFIND":
+			io.WriteString(w, principalOnly)
 		case strings.Contains(string(body), "sync-collection"):
 			reports = append(reports, "sync-collection")
 			io.WriteString(w, syncWithoutAddressData)
@@ -526,26 +582,29 @@ func TestSyncAddressBookFetchesMissingCards(t *testing.T) {
 		Username:        "alice",
 		Password:        "secret",
 		CardDAVEndpoint: server.URL,
-	})
+	}, &Options{UserAgent: "inca/test"})
 	if err != nil {
 		t.Fatalf("dav.New: %s", err)
 	}
 
-	result, err := d.SyncAddressBook(context.Background(), "/card/contacts/", "")
+	result, err := d.SynchronizeAddressBook(context.Background(), &carddav.AddressBook{
+		Path:             "/card/contacts/",
+		SupportedReports: []xml.Name{webdav.SyncCollectionName},
+	}, webdav.SyncState{}, nil)
 	if err != nil {
-		t.Fatalf("SyncAddressBook: %s", err)
+		t.Fatalf("SynchronizeAddressBook: %s", err)
 	}
 
 	if got := strings.Join(reports, ","); got != "sync-collection,addressbook-multiget" {
 		t.Fatalf("reports = %q, want sync-collection,addressbook-multiget", got)
 	}
-	if result.SyncToken != "card-1" {
-		t.Fatalf("token = %q, want card-1", result.SyncToken)
+	if result.State.SyncToken != "card-1" {
+		t.Fatalf("token = %q, want card-1", result.State.SyncToken)
 	}
-	if len(result.Updated) != 1 || result.Updated[0].Card == nil {
-		t.Fatalf("sync did not return card data: %+v", result.Updated)
+	if len(result.Updated) != 1 {
+		t.Fatalf("sync returned %d cards, want 1", len(result.Updated))
 	}
-	if got := result.Updated[0].Card.Value(vcard.FieldFormattedName); got != "Alice Example" {
+	if got := formattedName(t, &result.Updated[0]); got != "Alice Example" {
 		t.Fatalf("card FN = %q, want Alice Example", got)
 	}
 }

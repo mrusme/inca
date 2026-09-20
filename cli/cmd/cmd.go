@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	accountsCmd "xn--gckvb8fzb.com/inca/cli/accounts/cmd"
 	calendarsCmd "xn--gckvb8fzb.com/inca/cli/calendars/cmd"
 	peopleCmd "xn--gckvb8fzb.com/inca/cli/people/cmd"
 	syncCmd "xn--gckvb8fzb.com/inca/cli/sync/cmd"
@@ -35,6 +36,7 @@ func Execute() {
 
 func init() {
 	rootCmd.AddCommand(syncCmd.Cmd)
+	rootCmd.AddCommand(accountsCmd.Cmd)
 	rootCmd.AddCommand(peopleCmd.Cmd)
 	rootCmd.AddCommand(calendarsCmd.Cmd)
 	rootCmd.AddCommand(tasksCmd.Cmd)

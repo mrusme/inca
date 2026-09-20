@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/spf13/cobra"
+	"xn--gckvb8fzb.com/inca/cli/accounts/shared"
 	"xn--gckvb8fzb.com/inca/dav"
 	"xn--gckvb8fzb.com/inca/errs"
 	"xn--gckvb8fzb.com/inca/helpers/out"
@@ -13,7 +14,10 @@ import (
 	"xn--gckvb8fzb.com/inca/models/calendarobject"
 	"xn--gckvb8fzb.com/inca/models/config"
 	"xn--gckvb8fzb.com/inca/runtime"
+	"xn--gckvb8fzb.com/maya/libs/webdav"
 )
+
+var flagTrustHost []string
 
 var Cmd = &cobra.Command{
 	Use:     "sync",
@@ -38,9 +42,14 @@ var Cmd = &cobra.Command{
 			rt.NilOrDie(errs.ErrNoAccounts)
 		}
 
+		flags, err := shared.ParseTrustFlags(flagTrustHost, accounts)
+		rt.NilOrDie(err)
+
+		opts := &shared.Options{Flags: flags, Input: shared.Terminal()}
+
 		ctx := context.Background()
 		for i := range accounts {
-			syncAccount(rt, ctx, accounts[i])
+			syncAccount(rt, ctx, accounts[i], opts)
 		}
 	},
 }
@@ -49,17 +58,23 @@ func syncAccount(
 	rt *runtime.Runtime,
 	ctx context.Context,
 	account config.Account,
+	opts *shared.Options,
 ) {
 	if account.Name == "" {
 		rt.Out.Put(out.Opts{Type: out.Warn},
 			"Skipping an account without a name")
 		return
 	}
-	if account.Endpoint == "" &&
-		account.CalDAVEndpoint == "" &&
-		account.CardDAVEndpoint == "" {
+	session, err := shared.Connect(rt, account, opts)
+	if err != nil {
+		rt.Out.Put(out.Opts{Type: out.Error},
+			"Could not set up account %s: %s", account.Name, err.Error())
+		return
+	}
+	d := session.DAV
+	if !d.HasCalDAV() && !d.HasCardDAV() {
 		rt.Out.Put(out.Opts{Type: out.Warn},
-			"Skipping account %s without an endpoint",
+			"Skipping account %s, which has no endpoint and no address as its username",
 			rt.Out.FG(out.ColorPrimary, "%s", account.Name))
 		return
 	}
@@ -68,18 +83,19 @@ func syncAccount(
 		"Syncing account %s ...",
 		rt.Out.FG(out.ColorPrimary, "%s", account.Name))
 
-	d, err := dav.New(account)
-	if err != nil {
-		rt.Out.Put(out.Opts{Type: out.Error},
-			"Could not set up account %s: %s", account.Name, err.Error())
-		return
-	}
-
 	if d.HasCalDAV() {
 		syncCalendars(rt, ctx, d, account)
 	}
 	if d.HasCardDAV() {
 		syncAddressBooks(rt, ctx, d, account)
+	}
+
+	if opts.Input == nil {
+		for _, rejected := range session.Decider.Rejected() {
+			rt.Out.Put(out.Opts{Type: out.Error}, "Account %s: %s",
+				rt.Out.FG(out.ColorPrimary, "%s", account.Name),
+				shared.Hint(account.Name, rejected))
+		}
 	}
 }
 
@@ -101,40 +117,38 @@ func syncCalendars(
 
 		cal := calendar.FromDAV(account.Name, c)
 
-		prevToken := ""
+		var state webdav.SyncState
 		if prev, perr := calendar.Get(rt.Database, cal.GetKey()); perr == nil {
-			prevToken = prev.SyncToken
+			state = webdav.SyncState{SyncToken: prev.SyncToken, CTag: prev.CTag}
 		}
 
-		updated, deleted, newToken, incremental, complete, err := collectCalendarChanges(rt, ctx, d, c.Path, prevToken)
-		if err != nil {
+		result, err := d.SynchronizeCalendar(ctx, &c, state,
+			knownCalendarObjects(rt, account.Name, c.Path))
+		if result == nil {
 			rt.Out.Put(out.Opts{Type: out.Warn},
 				"Could not read calendar %s: %s", displayName(c.Name, c.Path),
 				err.Error())
 			continue
 		}
-		if complete {
-			deleted = append(deleted, staleCalendarObjects(rt, account.Name, c.Path, updated)...)
-		}
 
 		var stored int
-		for j := range updated {
-			co, err := calendarobject.FromDAV(account.Name, c.Path, updated[j])
+		for j := range result.Updated {
+			co, err := calendarobject.FromDAV(account.Name, c.Path, result.Updated[j])
 			if err != nil {
 				rt.Logger.Warningf("Skipping calendar object %s: %s",
-					updated[j].Path, err.Error())
+					result.Updated[j].Path, err.Error())
 				continue
 			}
 			if err := calendarobject.Set(rt.Database, co); err != nil {
 				rt.Logger.Warningf("Could not store calendar object %s: %s",
-					updated[j].Path, err.Error())
+					result.Updated[j].Path, err.Error())
 				continue
 			}
 			stored++
 		}
 
 		var removed int
-		for _, path := range deleted {
+		for _, path := range result.Deleted {
 			if err := calendarobject.DeleteByPath(
 				rt.Database, account.Name, path); err != nil {
 				rt.Logger.Warningf("Could not delete calendar object %s: %s",
@@ -144,7 +158,7 @@ func syncCalendars(
 			removed++
 		}
 
-		cal.SyncToken = newToken
+		cal.SyncToken, cal.CTag = result.State.SyncToken, result.State.CTag
 		if err := calendar.Set(rt.Database, cal); err != nil {
 			rt.Out.Put(out.Opts{Type: out.Error},
 				"Could not store calendar %s: %s", c.Path, err.Error())
@@ -152,61 +166,29 @@ func syncCalendars(
 		}
 
 		reportCollection(rt, "Calendar", displayName(c.Name, c.Path),
-			stored, removed, incremental)
+			stored, removed, result.Strategy, err)
 	}
 }
 
-func collectCalendarChanges(
-	rt *runtime.Runtime,
-	ctx context.Context,
-	d *dav.DAV,
-	path string,
-	prevToken string,
-) (updated []dav.CalendarObject, deleted []string, newToken string, incremental bool, complete bool, err error) {
-	complete = prevToken == ""
-
-	res, err := d.SyncCalendar(ctx, path, prevToken)
-	if err != nil && prevToken != "" {
-		rt.Logger.Debugf("Calendar %s: sync token rejected (%s), syncing fresh",
-			path, err.Error())
-		res, err = d.SyncCalendar(ctx, path, "")
-		complete = true
-	}
-	if err != nil {
-		rt.Logger.Debugf("Calendar %s: sync-collection unavailable (%s), "+
-			"falling back to a full query", path, err.Error())
-		objects, qerr := d.QueryCalendarObjects(ctx, path)
-		if qerr != nil {
-			return nil, nil, "", false, false, qerr
-		}
-		return objects, nil, "", false, true, nil
-	}
-	return res.Updated, res.Deleted, res.SyncToken, true, complete, nil
-}
-
-func staleCalendarObjects(
+func knownCalendarObjects(
 	rt *runtime.Runtime,
 	accountName string,
 	calendarPath string,
-	current []dav.CalendarObject,
-) (stale []string) {
+) map[string]string {
 	local, err := calendarobject.List(rt.Database)
 	if err != nil {
 		rt.Logger.Warningf("Could not list the calendar objects of %s: %s", calendarPath, err.Error())
 		return nil
 	}
 
-	listed := make(map[string]bool, len(current))
-	for i := range current {
-		listed[current[i].Path] = true
-	}
+	known := make(map[string]string)
 	for _, co := range local {
-		if co.AccountName == accountName && co.CalendarPath == calendarPath && !listed[co.Path] {
-			stale = append(stale, co.Path)
+		if co.AccountName == accountName && co.CalendarPath == calendarPath {
+			known[co.Path] = co.ETag
 		}
 	}
 
-	return stale
+	return known
 }
 
 func syncAddressBooks(
@@ -227,40 +209,38 @@ func syncAddressBooks(
 
 		book := addressbook.FromDAV(account.Name, ab)
 
-		prevToken := ""
+		var state webdav.SyncState
 		if prev, perr := addressbook.Get(rt.Database, book.GetKey()); perr == nil {
-			prevToken = prev.SyncToken
+			state = webdav.SyncState{SyncToken: prev.SyncToken, CTag: prev.CTag}
 		}
 
-		updated, deleted, newToken, incremental, complete, err := collectAddressChanges(rt, ctx, d, ab.Path, prevToken)
-		if err != nil {
+		result, err := d.SynchronizeAddressBook(ctx, &ab, state,
+			knownAddressObjects(rt, account.Name, ab.Path))
+		if result == nil {
 			rt.Out.Put(out.Opts{Type: out.Warn},
 				"Could not read address book %s: %s",
 				displayName(ab.Name, ab.Path), err.Error())
 			continue
 		}
-		if complete {
-			deleted = append(deleted, staleAddressObjects(rt, account.Name, ab.Path, updated)...)
-		}
 
 		var stored int
-		for j := range updated {
-			ao, err := addressobject.FromDAV(account.Name, ab.Path, updated[j])
+		for j := range result.Updated {
+			ao, err := addressobject.FromDAV(account.Name, ab.Path, result.Updated[j])
 			if err != nil {
 				rt.Logger.Warningf("Skipping address object %s: %s",
-					updated[j].Path, err.Error())
+					result.Updated[j].Path, err.Error())
 				continue
 			}
 			if err := addressobject.Set(rt.Database, ao); err != nil {
 				rt.Logger.Warningf("Could not store address object %s: %s",
-					updated[j].Path, err.Error())
+					result.Updated[j].Path, err.Error())
 				continue
 			}
 			stored++
 		}
 
 		var removed int
-		for _, path := range deleted {
+		for _, path := range result.Deleted {
 			if err := addressobject.DeleteByPath(
 				rt.Database, account.Name, path); err != nil {
 				rt.Logger.Warningf("Could not delete address object %s: %s",
@@ -270,7 +250,7 @@ func syncAddressBooks(
 			removed++
 		}
 
-		book.SyncToken = newToken
+		book.SyncToken, book.CTag = result.State.SyncToken, result.State.CTag
 		if err := addressbook.Set(rt.Database, book); err != nil {
 			rt.Out.Put(out.Opts{Type: out.Error},
 				"Could not store address book %s: %s", ab.Path, err.Error())
@@ -278,61 +258,29 @@ func syncAddressBooks(
 		}
 
 		reportCollection(rt, "Address book", displayName(ab.Name, ab.Path),
-			stored, removed, incremental)
+			stored, removed, result.Strategy, err)
 	}
 }
 
-func collectAddressChanges(
-	rt *runtime.Runtime,
-	ctx context.Context,
-	d *dav.DAV,
-	path string,
-	prevToken string,
-) (updated []dav.AddressObject, deleted []string, newToken string, incremental bool, complete bool, err error) {
-	complete = prevToken == ""
-
-	res, err := d.SyncAddressBook(ctx, path, prevToken)
-	if err != nil && prevToken != "" {
-		rt.Logger.Debugf("Address book %s: sync token rejected (%s), syncing fresh",
-			path, err.Error())
-		res, err = d.SyncAddressBook(ctx, path, "")
-		complete = true
-	}
-	if err != nil {
-		rt.Logger.Debugf("Address book %s: sync-collection unavailable (%s), "+
-			"falling back to a full query", path, err.Error())
-		objects, qerr := d.QueryAddressObjects(ctx, path)
-		if qerr != nil {
-			return nil, nil, "", false, false, qerr
-		}
-		return objects, nil, "", false, true, nil
-	}
-	return res.Updated, res.Deleted, res.SyncToken, true, complete, nil
-}
-
-func staleAddressObjects(
+func knownAddressObjects(
 	rt *runtime.Runtime,
 	accountName string,
 	addressBookPath string,
-	current []dav.AddressObject,
-) (stale []string) {
+) map[string]string {
 	local, err := addressobject.List(rt.Database)
 	if err != nil {
 		rt.Logger.Warningf("Could not list the address objects of %s: %s", addressBookPath, err.Error())
 		return nil
 	}
 
-	listed := make(map[string]bool, len(current))
-	for i := range current {
-		listed[current[i].Path] = true
-	}
+	known := make(map[string]string)
 	for _, ao := range local {
-		if ao.AccountName == accountName && ao.AddressBookPath == addressBookPath && !listed[ao.Path] {
-			stale = append(stale, ao.Path)
+		if ao.AccountName == accountName && ao.AddressBookPath == addressBookPath {
+			known[ao.Path] = ao.ETag
 		}
 	}
 
-	return stale
+	return known
 }
 
 func reportCollection(
@@ -341,11 +289,19 @@ func reportCollection(
 	name string,
 	stored int,
 	removed int,
-	incremental bool,
+	strategy webdav.SyncStrategy,
+	incomplete error,
 ) {
-	mode := "full"
-	if incremental {
-		mode = "sync"
+	if incomplete != nil {
+		rt.Out.Put(out.Opts{Type: out.Warn},
+			"%s %s: %s updated, %s removed %s, then: %s",
+			kind,
+			rt.Out.FG(out.ColorPrimary, "%s", name),
+			rt.Out.FG(out.ColorCyan, "%d", stored),
+			rt.Out.FG(out.ColorCyan, "%d", removed),
+			rt.Out.FG(out.ColorSecondary, "(%s)", strategy),
+			incomplete.Error())
+		return
 	}
 
 	rt.Out.Put(out.Opts{Type: out.Ok},
@@ -354,7 +310,7 @@ func reportCollection(
 		rt.Out.FG(out.ColorPrimary, "%s", name),
 		rt.Out.FG(out.ColorCyan, "%d", stored),
 		rt.Out.FG(out.ColorCyan, "%d", removed),
-		rt.Out.FG(out.ColorSecondary, "(%s)", mode))
+		rt.Out.FG(out.ColorSecondary, "(%s)", strategy))
 }
 
 func displayName(name string, path string) string {
@@ -365,4 +321,10 @@ func displayName(name string, path string) string {
 }
 
 func init() {
+	Cmd.Flags().StringArrayVar(
+		&flagTrustHost,
+		shared.TrustHostFlag,
+		nil,
+		shared.TrustHostUsage,
+	)
 }
