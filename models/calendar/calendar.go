@@ -16,6 +16,7 @@ type Calendar struct {
 	SupportedComponents []string `json:"supported_components"`
 	MaxResourceSize     int64    `json:"max_resource_size"`
 	SyncToken           string   `json:"sync_token"`
+	CTag                string   `json:"ctag"`
 }
 
 func New(accountName string, path string) *Calendar {
@@ -33,7 +34,6 @@ func FromDAV(accountName string, c caldav.Calendar) *Calendar {
 	cal.Color = c.Color
 	cal.SupportedComponents = c.SupportedComponentSet
 	cal.MaxResourceSize = c.MaxResourceSize
-	cal.SyncToken = c.SyncToken
 	return cal
 }
 

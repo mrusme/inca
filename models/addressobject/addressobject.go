@@ -6,6 +6,7 @@ import (
 
 	"github.com/emersion/go-vcard"
 	"xn--gckvb8fzb.com/inca/database"
+	"xn--gckvb8fzb.com/inca/errs"
 	"xn--gckvb8fzb.com/maya/libs/webdav/carddav"
 )
 
@@ -40,7 +41,13 @@ func FromDAV(
 	addressBookPath string,
 	obj carddav.AddressObject,
 ) (*AddressObject, error) {
-	card := obj.Card
+	card, err := obj.Decoded()
+	if err != nil {
+		return nil, err
+	}
+	if card == nil {
+		return nil, errs.ErrObjectWithoutData
+	}
 	if card.Get(vcard.FieldVersion) == nil {
 		card.SetValue(vcard.FieldVersion, "3.0")
 	}

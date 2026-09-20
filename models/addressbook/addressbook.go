@@ -14,6 +14,7 @@ type AddressBook struct {
 	Description     string `json:"description"`
 	MaxResourceSize int64  `json:"max_resource_size"`
 	SyncToken       string `json:"sync_token"`
+	CTag            string `json:"ctag"`
 }
 
 func New(accountName string, path string) *AddressBook {
@@ -29,7 +30,6 @@ func FromDAV(accountName string, ab carddav.AddressBook) *AddressBook {
 	book.Name = ab.Name
 	book.Description = ab.Description
 	book.MaxResourceSize = ab.MaxResourceSize
-	book.SyncToken = ab.SyncToken
 	return book
 }
 

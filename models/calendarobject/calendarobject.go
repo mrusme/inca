@@ -6,6 +6,7 @@ import (
 
 	"github.com/emersion/go-ical"
 	"xn--gckvb8fzb.com/inca/database"
+	"xn--gckvb8fzb.com/inca/errs"
 	"xn--gckvb8fzb.com/maya/libs/webdav/caldav"
 )
 
@@ -36,8 +37,16 @@ func FromDAV(
 	calendarPath string,
 	obj caldav.CalendarObject,
 ) (*CalendarObject, error) {
+	data, err := obj.Decoded()
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, errs.ErrObjectWithoutData
+	}
+
 	var buf strings.Builder
-	if err := ical.NewEncoder(&buf).Encode(obj.Data); err != nil {
+	if err := ical.NewEncoder(&buf).Encode(data); err != nil {
 		return nil, err
 	}
 
@@ -45,7 +54,7 @@ func FromDAV(
 	co.ETag = obj.ETag
 	co.ModTime = obj.ModTime
 	co.Data = buf.String()
-	co.Component, co.UID = extractMeta(obj.Data)
+	co.Component, co.UID = extractMeta(data)
 	return co, nil
 }
 

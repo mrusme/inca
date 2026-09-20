@@ -25,4 +25,8 @@ var (
 	ErrKeyNotFound error = errors.New(
 		"Key not found",
 	)
+
+	ErrObjectWithoutData error = errors.New(
+		"The server returned the object without its data",
+	)
 )
