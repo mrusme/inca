@@ -16,6 +16,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/spf13/cobra v1.10.2
 	github.com/teambition/rrule-go v1.8.2
+	golang.org/x/net v0.59.0
 	xn--gckvb8fzb.com/maya v0.0.0
 	xn--gckvb8fzb.com/zeit v1.1.0
 )

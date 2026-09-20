@@ -1,4 +1,4 @@
-.PHONY: test build help
+.PHONY: test lint build help
 PWD := $(shell pwd)
 GOPATH := $(shell go env GOPATH)
 
@@ -12,6 +12,8 @@ VERSION := $(shell git describe --tags 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --verify HEAD 2>/dev/null || echo "none")
 DATE := $(shell date)
 
+STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.1
+
 all: build
 
 help: ## print this help
@@ -19,6 +21,9 @@ help: ## print this help
 
 test: ## test
 	go test -v ./...
+
+lint: ## staticcheck
+	go run $(STATICCHECK) ./...
 
 build: ## build
 	@echo "Building with the following parameters:"
